@@ -1,0 +1,24 @@
+# Local credentials — never commit
+config.json
+
+# Sample/test data
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build / cache
+build/
+dist/
+.pytest_cache/
