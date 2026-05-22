@@ -51,10 +51,17 @@ Center: {{Center}}
 `docxtpl` uses Jinja2-style `{{ }}` syntax — type the braces in Word as
 plain text (not as Word fields).
 
-## Auth (config.json)
+## Auth
 
-Credentials are read from `config.json` in the same directory as
-`app.py`:
+Credentials are resolved in this order:
+
+1. **Environment variables `APP_USERNAME` and `APP_PASSWORD`** — used
+   when both are set. This is the path for Hugging Face Spaces (add them
+   as Space secrets).
+2. **`config.json` next to `app.py`** — used as a fallback when the env
+   vars are not set. Convenient for local runs.
+
+`config.json` shape:
 
 ```json
 {
@@ -63,7 +70,7 @@ Credentials are read from `config.json` in the same directory as
 }
 ```
 
-Change these before deploying. Do **not** commit real credentials.
+`config.json` is gitignored — do not commit real credentials.
 
 ## Run locally
 
@@ -110,23 +117,15 @@ The UI surfaces clear messages for:
    - `requirements.txt`
    - `template.docx`
    - `README.md`
-3. **Do not** commit your real `config.json`. Instead, on the Space:
-   - Go to **Settings → Variables and secrets**.
-   - Add a secret `CONFIG_JSON` with the JSON content, or upload a
-     private `config.json` via the Files tab (private Space recommended).
-4. If you use a secret, add a tiny bootstrap at the top of `app.py`
-   (before `load_credentials()`) to write the secret to disk:
+3. On the Space, go to **Settings → Variables and secrets** and add two
+   secrets:
+   - `APP_USERNAME` — your login username
+   - `APP_PASSWORD` — your login password
 
-   ```python
-   import os, pathlib
-   if not (pathlib.Path(__file__).parent / "config.json").exists() and os.environ.get("CONFIG_JSON"):
-       (pathlib.Path(__file__).parent / "config.json").write_text(
-           os.environ["CONFIG_JSON"], encoding="utf-8"
-       )
-   ```
-
-5. The Space will install `requirements.txt` and start `app.py`
-   automatically. Sign in with the credentials from your config.
+   The Space exposes these as environment variables, which `app.py` picks
+   up automatically. No `config.json` is needed on the Space.
+4. The Space will install `requirements.txt` and start `app.py`
+   automatically. Sign in with the credentials from your secrets.
 
 Set the Space to **Private** if you don't want the auth prompt to be
 publicly reachable.

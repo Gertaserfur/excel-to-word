@@ -1,10 +1,9 @@
-import io
 import json
 import os
 import re
 import tempfile
 import zipfile
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import gradio as gr
@@ -15,58 +14,102 @@ APP_DIR = Path(__file__).parent.resolve()
 TEMPLATE_PATH = APP_DIR / "template.docx"
 CONFIG_PATH = APP_DIR / "config.json"
 
-COLUMN_MAP = {
-    "Personel": "Personnel",
-    "Servis Saati": "Time",
-    "Center": "Center",
-}
+REQUIRED_COLUMNS = ["Şöför", "Saat", "Tarih", "Müşteri", "To", "From", "Kişi"]
 
 
 def load_credentials():
-    if not CONFIG_PATH.exists():
-        raise FileNotFoundError(
-            f"config.json not found at {CONFIG_PATH}. "
-            'Create it with {"username": "xxx", "password": "xxx"}.'
-        )
-    with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        cfg = json.load(f)
-    username = cfg.get("username")
-    password = cfg.get("password")
-    if not username or not password:
-        raise ValueError('config.json must contain non-empty "username" and "password".')
-    return str(username), str(password)
+    env_user = os.environ.get("APP_USERNAME")
+    env_pw = os.environ.get("APP_PASSWORD")
+    if env_user and env_pw:
+        return env_user, env_pw
+
+    if CONFIG_PATH.exists():
+        with CONFIG_PATH.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        username = cfg.get("username")
+        password = cfg.get("password")
+        if not username or not password:
+            raise ValueError(
+                'config.json must contain non-empty "username" and "password".'
+            )
+        return str(username), str(password)
+
+    raise FileNotFoundError(
+        "No credentials configured. Set APP_USERNAME and APP_PASSWORD "
+        "environment variables (recommended for Hugging Face Spaces — "
+        "add them as Space secrets), or create a config.json next to "
+        f"app.py at {CONFIG_PATH} with "
+        '{"username": "xxx", "password": "xxx"}.'
+    )
 
 
-def format_time(value) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, float) and pd.isna(value):
-        return ""
-    if isinstance(value, time):
-        return value.strftime("%H:%M")
+def parse_tarih(value):
+    """Return (display 'dd.mm.yyyy', sort-key date). Falls back to raw string."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "", date.min
     if isinstance(value, datetime):
-        return value.strftime("%H:%M")
+        d = value.date()
+        return d.strftime("%d.%m.%Y"), d
+    if isinstance(value, date):
+        return value.strftime("%d.%m.%Y"), value
+    s = str(value).strip()
+    if not s:
+        return "", date.min
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(s, fmt).date()
+            return d.strftime("%d.%m.%Y"), d
+        except ValueError:
+            continue
+    return s, date.min
+
+
+def parse_saat(value):
+    """Return (display 'HH:MM', sort-key time)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "", time.min
+    if isinstance(value, time):
+        return value.strftime("%H:%M"), value.replace(second=0, microsecond=0)
+    if isinstance(value, datetime):
+        t = value.time().replace(second=0, microsecond=0)
+        return t.strftime("%H:%M"), t
     if isinstance(value, timedelta):
         total = int(value.total_seconds())
         h = (total // 3600) % 24
         m = (total % 3600) // 60
-        return f"{h:02d}:{m:02d}"
+        t = time(h, m)
+        return t.strftime("%H:%M"), t
     s = str(value).strip()
     if not s:
-        return ""
-    # Excel may give "HH:MM:SS" or "HH:MM" or a fractional day number as string
+        return "", time.min
     try:
         f = float(s)
         total = int(round(f * 24 * 3600))
         h = (total // 3600) % 24
         m = (total % 3600) // 60
-        return f"{h:02d}:{m:02d}"
+        t = time(h, m)
+        return t.strftime("%H:%M"), t
     except ValueError:
         pass
-    parts = s.split(":")
-    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-        return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
-    return s
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            t = datetime.strptime(s, fmt).time().replace(second=0, microsecond=0)
+            return t.strftime("%H:%M"), t
+        except ValueError:
+            continue
+    return s, time.min
+
+
+def count_people(kisi) -> int:
+    if kisi is None or (isinstance(kisi, float) and pd.isna(kisi)):
+        return 0
+    parts = [p.strip() for p in str(kisi).split(" - ")]
+    parts = [p for p in parts if p]
+    return len(parts)
+
+
+def format_people(n: int) -> str:
+    return "1 person" if n == 1 else f"{n} people"
 
 
 _SAFE_NAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
@@ -80,14 +123,15 @@ def safe_filename(name: str) -> str:
     return name or "document"
 
 
-def render_doc(row: pd.Series, out_path: Path) -> None:
+def _str(value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return str(value).strip()
+
+
+def render_doc(driver: str, rows: list[dict], out_path: Path) -> None:
     tpl = DocxTemplate(str(TEMPLATE_PATH))
-    context = {
-        "Personnel": "" if pd.isna(row["Personel"]) else str(row["Personel"]).strip(),
-        "Time": format_time(row["Servis Saati"]),
-        "Center": "" if pd.isna(row["Center"]) else str(row["Center"]).strip(),
-    }
-    tpl.render(context)
+    tpl.render({"Şöför": driver, "rows": rows})
     tpl.save(str(out_path))
 
 
@@ -96,7 +140,8 @@ def convert(excel_file):
         raise gr.Error("Please upload an .xlsx file.")
     if not TEMPLATE_PATH.exists():
         raise gr.Error(
-            f"template.docx not found next to app.py (expected at {TEMPLATE_PATH})."
+            f"template.docx not found next to app.py (expected at {TEMPLATE_PATH}). "
+            "Run create_template.py once to generate it."
         )
 
     src = excel_file if isinstance(excel_file, str) else excel_file.name
@@ -108,31 +153,63 @@ def convert(excel_file):
     if df.empty:
         raise gr.Error("The Excel file is empty.")
 
-    missing = [c for c in COLUMN_MAP if c not in df.columns]
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise gr.Error(
             "Missing required column(s): "
             + ", ".join(missing)
-            + f". Expected columns: {', '.join(COLUMN_MAP.keys())}."
+            + f". Expected columns: {', '.join(REQUIRED_COLUMNS)}."
+        )
+
+    by_driver: dict[str, list[dict]] = {}
+    driver_order: list[str] = []
+
+    for idx, row in df.iterrows():
+        driver_raw = row["Şöför"]
+        if pd.isna(driver_raw) or not str(driver_raw).strip():
+            raise gr.Error(f"Row {idx + 2}: 'Şöför' is empty.")
+        driver = str(driver_raw).strip()
+        if driver not in by_driver:
+            by_driver[driver] = []
+            driver_order.append(driver)
+
+        tarih_display, tarih_key = parse_tarih(row["Tarih"])
+        saat_display, saat_key = parse_saat(row["Saat"])
+        kisi_raw = _str(row["Kişi"])
+        people = format_people(count_people(row["Kişi"]))
+
+        by_driver[driver].append(
+            {
+                "_sort": (tarih_key, saat_key),
+                "Tarih": tarih_display,
+                "Saat": saat_display,
+                "Müşteri": _str(row["Müşteri"]),
+                "To": _str(row["To"]),
+                "From": _str(row["From"]),
+                "NumberOfPeople": people,
+                "Kişi": kisi_raw,
+            }
         )
 
     out_dir = Path(tempfile.mkdtemp(prefix="xlsx2docx_"))
     generated: list[Path] = []
     used_names: dict[str, int] = {}
 
-    for idx, row in df.iterrows():
-        personel_raw = row["Personel"]
-        if pd.isna(personel_raw) or not str(personel_raw).strip():
-            raise gr.Error(f"Row {idx + 2}: 'Personel' is empty.")
-        base = safe_filename(str(personel_raw))
+    for driver in driver_order:
+        rows_for_driver = sorted(by_driver[driver], key=lambda r: r["_sort"])
+        for r in rows_for_driver:
+            r.pop("_sort", None)
+
+        base = safe_filename(driver)
         count = used_names.get(base, 0) + 1
         used_names[base] = count
         filename = f"{base}.docx" if count == 1 else f"{base}_{count}.docx"
         out_path = out_dir / filename
+
         try:
-            render_doc(row, out_path)
+            render_doc(driver, rows_for_driver, out_path)
         except Exception as e:
-            raise gr.Error(f"Row {idx + 2}: failed to render document — {e}")
+            raise gr.Error(f"Driver '{driver}': failed to render document — {e}")
         generated.append(out_path)
 
     if len(generated) == 1:
@@ -186,9 +263,10 @@ def build_ui() -> gr.Blocks:
         with gr.Column(visible=False) as app_screen:
             gr.Markdown(
                 "# Excel → Word\n"
-                "Upload an `.xlsx` file with columns **Personel**, **Servis Saati**, **Center**. "
-                "Each row produces one Word document from `template.docx`. "
-                "Multiple rows are returned as a zip."
+                "Upload an `.xlsx` file with columns **Şöför, Saat, Tarih, "
+                "Müşteri, To, From, Kişi**. Rows are grouped by driver "
+                "(`Şöför`); each driver gets one Word file. Multiple drivers "
+                "are returned as a zip."
             )
             with gr.Row():
                 inp = gr.File(label="Excel file (.xlsx)", file_types=[".xlsx"])
