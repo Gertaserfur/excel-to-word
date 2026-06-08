@@ -128,9 +128,9 @@ def _str(value) -> str:
     return str(value).strip()
 
 
-def render_doc_all(drivers: list[dict], out_path: Path) -> None:
+def render_doc(rows: list[dict], out_path: Path) -> None:
     tpl = DocxTemplate(str(TEMPLATE_PATH))
-    tpl.render({"drivers": drivers})
+    tpl.render({"rows": rows})
     tpl.save(str(out_path))
 
 
@@ -163,58 +163,38 @@ def convert(excel_file):
     df["_tarih_parsed"] = pd.to_datetime(
         df["Tarih"], format="%d.%m.%Y", errors="coerce"
     )
+    df_sorted = df.sort_values(by=["_tarih_parsed", "Saat"])
 
-    by_driver: dict[str, list[dict]] = {}
-    driver_order: list[str] = []
-
-    for idx, row in df.iterrows():
+    rows = []
+    for _, row in df_sorted.iterrows():
         driver_raw = row["Şöför"]
         if pd.isna(driver_raw) or not str(driver_raw).strip():
-            raise gr.Error(f"Row {idx + 2}: 'Şöför' is empty.")
-        driver = str(driver_raw).strip()
-        if driver not in by_driver:
-            by_driver[driver] = []
-            driver_order.append(driver)
+            raise gr.Error("'Şöför' column contains empty values.")
 
         tarih_display, _ = parse_tarih(row["Tarih"])
         saat_display, _ = parse_saat(row["Saat"])
         kisi_raw = _str(row["Kişi"])
         people = format_people(count_people(row["Kişi"]))
 
-        by_driver[driver].append(
+        rows.append(
             {
                 "Tarih": tarih_display,
                 "Saat": saat_display,
+                "Şöför": str(driver_raw).strip(),
                 "Müşteri": _str(row["Müşteri"]),
                 "To": _str(row["To"]),
                 "From": _str(row["From"]),
                 "NumberOfPeople": people,
                 "Kişi": kisi_raw,
-                "_tarih_sort": row["_tarih_parsed"],
-                "_saat_sort": row["Saat"],
             }
         )
-
-    drivers_data = []
-    for driver in driver_order:
-        rows_list = by_driver[driver]
-        rows_sorted = sorted(
-            rows_list,
-            key=lambda r: (r["_tarih_sort"], r["_saat_sort"]),
-        )
-        for r in rows_sorted:
-            r.pop("_tarih_sort", None)
-            r.pop("_saat_sort", None)
-        drivers_data.append({"name": driver, "rows": rows_sorted})
-
-    df.drop(columns=["_tarih_parsed"], inplace=True)
 
     out_dir = Path(tempfile.mkdtemp(prefix="xlsx2docx_"))
     output_filename = safe_filename(Path(src).stem) + ".docx"
     out_path = out_dir / output_filename
 
     try:
-        render_doc_all(drivers_data, out_path)
+        render_doc(rows, out_path)
     except Exception as e:
         raise gr.Error(f"Failed to render document: {e}")
 

@@ -28,16 +28,11 @@ if LOGO.exists():
 else:
     print(f"No logo.png found at {LOGO} — skipping (template still valid).")
 
-doc.add_paragraph("{% for driver in drivers %}")
-doc.add_paragraph("Şöför: {{driver.name}}")
-doc.add_paragraph("")
-doc.add_paragraph("{% for row in driver.rows %}")
+doc.add_paragraph("{% for row in rows %}")
 doc.add_paragraph(
-    "{{row.Tarih}} - {{row.Saat}} – {{row.Müşteri}} – {{row.To}} "
-    "=> {{row.From}} – {{row.NumberOfPeople}} – {{row.Kişi}}"
+    "{{row.Tarih}} - {{row.Saat}} – {{row.Şöför}} – {{row.Müşteri}} – "
+    "{{row.To}} => {{row.From}} – {{row.NumberOfPeople}} – {{row.Kişi}}"
 )
-doc.add_paragraph("{% endfor %}")
-doc.add_paragraph("")
 doc.add_paragraph("{% endfor %}")
 
 doc.save(str(OUT))
