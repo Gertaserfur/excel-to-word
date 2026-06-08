@@ -2,7 +2,6 @@ import json
 import os
 import re
 import tempfile
-import zipfile
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -129,9 +128,9 @@ def _str(value) -> str:
     return str(value).strip()
 
 
-def render_doc(driver: str, rows: list[dict], out_path: Path) -> None:
+def render_doc_all(drivers: list[dict], out_path: Path) -> None:
     tpl = DocxTemplate(str(TEMPLATE_PATH))
-    tpl.render({"Şöför": driver, "rows": rows})
+    tpl.render({"drivers": drivers})
     tpl.save(str(out_path))
 
 
@@ -161,6 +160,10 @@ def convert(excel_file):
             + f". Expected columns: {', '.join(REQUIRED_COLUMNS)}."
         )
 
+    df["_tarih_parsed"] = pd.to_datetime(
+        df["Tarih"], format="%d.%m.%Y", errors="coerce"
+    )
+
     by_driver: dict[str, list[dict]] = {}
     driver_order: list[str] = []
 
@@ -173,14 +176,13 @@ def convert(excel_file):
             by_driver[driver] = []
             driver_order.append(driver)
 
-        tarih_display, tarih_key = parse_tarih(row["Tarih"])
-        saat_display, saat_key = parse_saat(row["Saat"])
+        tarih_display, _ = parse_tarih(row["Tarih"])
+        saat_display, _ = parse_saat(row["Saat"])
         kisi_raw = _str(row["Kişi"])
         people = format_people(count_people(row["Kişi"]))
 
         by_driver[driver].append(
             {
-                "_sort": (tarih_key, saat_key),
                 "Tarih": tarih_display,
                 "Saat": saat_display,
                 "Müşteri": _str(row["Müşteri"]),
@@ -188,38 +190,35 @@ def convert(excel_file):
                 "From": _str(row["From"]),
                 "NumberOfPeople": people,
                 "Kişi": kisi_raw,
+                "_tarih_sort": row["_tarih_parsed"],
+                "_saat_sort": row["Saat"],
             }
         )
 
-    out_dir = Path(tempfile.mkdtemp(prefix="xlsx2docx_"))
-    generated: list[Path] = []
-    used_names: dict[str, int] = {}
-
+    drivers_data = []
     for driver in driver_order:
-        rows_for_driver = sorted(by_driver[driver], key=lambda r: r["_sort"])
-        for r in rows_for_driver:
-            r.pop("_sort", None)
+        rows_list = by_driver[driver]
+        rows_sorted = sorted(
+            rows_list,
+            key=lambda r: (r["_tarih_sort"], r["_saat_sort"]),
+        )
+        for r in rows_sorted:
+            r.pop("_tarih_sort", None)
+            r.pop("_saat_sort", None)
+        drivers_data.append({"name": driver, "rows": rows_sorted})
 
-        base = safe_filename(driver)
-        count = used_names.get(base, 0) + 1
-        used_names[base] = count
-        filename = f"{base}.docx" if count == 1 else f"{base}_{count}.docx"
-        out_path = out_dir / filename
+    df.drop(columns=["_tarih_parsed"], inplace=True)
 
-        try:
-            render_doc(driver, rows_for_driver, out_path)
-        except Exception as e:
-            raise gr.Error(f"Driver '{driver}': failed to render document — {e}")
-        generated.append(out_path)
+    out_dir = Path(tempfile.mkdtemp(prefix="xlsx2docx_"))
+    output_filename = safe_filename(Path(src).stem) + ".docx"
+    out_path = out_dir / output_filename
 
-    if len(generated) == 1:
-        return str(generated[0])
+    try:
+        render_doc_all(drivers_data, out_path)
+    except Exception as e:
+        raise gr.Error(f"Failed to render document: {e}")
 
-    zip_path = out_dir / "documents.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in generated:
-            zf.write(p, arcname=p.name)
-    return str(zip_path)
+    return str(out_path)
 
 
 def attempt_login(username: str, password: str, logged_in: bool):
@@ -264,9 +263,8 @@ def build_ui() -> gr.Blocks:
             gr.Markdown(
                 "# Excel → Word\n"
                 "Upload an `.xlsx` file with columns **Şöför, Saat, Tarih, "
-                "Müşteri, To, From, Kişi**. Rows are grouped by driver "
-                "(`Şöför`); each driver gets one Word file. Multiple drivers "
-                "are returned as a zip."
+                "Müşteri, To, From, Kişi**. All drivers and their transfers "
+                "are combined into a single Word document, named after your file."
             )
             with gr.Row():
                 inp = gr.File(label="Excel file (.xlsx)", file_types=[".xlsx"])
